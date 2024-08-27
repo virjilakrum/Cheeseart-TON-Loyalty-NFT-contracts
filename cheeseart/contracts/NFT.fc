@@ -1,0 +1,119 @@
+(int) load_data() inline {
+  var ds = get_data().begin_parse();
+  return (
+    ds~load_uint(64),  ;; total_supply
+    ds~load_uint(64),  ;; max_supply
+    ds~load_uint(64),  ;; price
+    ds~load_uint(64),  ;; owner
+    ds~load_uint(1),   ;; sale_is_active
+    ds~load_uint(64)   ;; royalty_percent
+  );
+}
+
+() save_data(int total_supply, int max_supply, int price, int owner, int sale_is_active, int royalty_percent) impure inline {
+  set_data(begin_cell()
+    .store_uint(total_supply, 64)
+    .store_uint(max_supply, 64)
+    .store_uint(price, 64)
+    .store_uint(owner, 64)
+    .store_uint(sale_is_active, 1)
+    .store_uint(royalty_percent, 64)
+    .end_cell());
+}
+
+;; Getter fonksiyonları
+(int, int, int, int, int, int) get_collection_data() method_id {
+  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
+  return (total_supply, max_supply, price, owner, sale_is_active, royalty_percent);
+}
+
+;; Mint fonksiyonu
+() mint(slice to) impure {
+  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
+  throw_unless(101, sale_is_active);
+  throw_unless(102, total_supply < max_supply);
+
+  int amount = price;
+  throw_unless(103, msg.value >= amount);
+
+  total_supply += 1;
+  save_data(total_supply, max_supply, price, owner, sale_is_active, royalty_percent);
+
+  ;; NFT'yi oluştur ve gönder
+  var nft_item = begin_cell()
+    .store_uint(total_supply, 64)
+    .store_slice(to)
+    .end_cell();
+
+  send_raw_message(nft_item, 64);
+}
+
+;; Owner fonksiyonları
+() toggle_sale() impure {
+  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
+  throw_unless(401, msg.sender == owner);
+  save_data(total_supply, max_supply, price, owner, ~ sale_is_active, royalty_percent);
+}
+
+() set_price(int new_price) impure {
+  var (total_supply, max_supply, _, owner, sale_is_active, royalty_percent) = load_data();
+  throw_unless(401, msg.sender == owner);
+  save_data(total_supply, max_supply, new_price, owner, sale_is_active, royalty_percent);
+}
+
+() withdraw() impure {
+  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
+  throw_unless(401, msg.sender == owner);
+  raw_reserve(0, 4);
+  send_raw_message(begin_cell().store_uint(0x18, 6).store_slice(owner).store_coins(0).store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1).end_cell(), 128);
+}
+
+;; Receive fonksiyonu
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  if (in_msg_body.slice_empty?()) { ;; Basit transfer
+    return ();
+  }
+
+  int op = in_msg_body~load_uint(32);
+
+  if (op == 1) { ;; Mint
+    mint(in_msg_body~load_msg_addr());
+  } elseif (op == 2) { ;; Toggle sale
+    toggle_sale();
+  } elseif (op == 3) { ;; Set price
+    set_price(in_msg_body~load_uint(64));
+  } elseif (op == 4) { ;; Withdraw
+    withdraw();
+  }
+}
+
+;; Get methods
+int total_supply() method_id {
+  var (total_supply, _, _, _, _, _) = load_data();
+  return total_supply;
+}
+
+int max_supply() method_id {
+  var (_, max_supply, _, _, _, _) = load_data();
+  return max_supply;
+}
+
+int price() method_id {
+  var (_, _, price, _, _, _) = load_data();
+  return price;
+}
+
+int owner() method_id {
+  var (_, _, _, owner, _, _) = load_data();
+  return owner;
+}
+
+int sale_is_active() method_id {
+  var (_, _, _, _, sale_is_active, _) = load_data();
+  return sale_is_active;
+}
+
+int royalty_percent() method_id {
+  var (_, _, _, _, _, royalty_percent) = load_data();
+  return royalty_percent;
+}
