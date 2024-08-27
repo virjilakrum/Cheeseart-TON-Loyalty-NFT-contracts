@@ -1,43 +1,49 @@
-(int) load_data() inline {
+(int, int, int, int, int, int, int, int, cell, cell, int) load_data() inline {
   var ds = get_data().begin_parse();
   return (
     ds~load_uint(64),  ;; total_supply
     ds~load_uint(64),  ;; max_supply
-    ds~load_uint(64),  ;; price
+    ds~load_uint(64),  ;; public_price
+    ds~load_uint(64),  ;; presale_price
     ds~load_uint(64),  ;; owner
-    ds~load_uint(1),   ;; sale_is_active
-    ds~load_uint(64)   ;; royalty_percent
+    ds~load_uint(1),   ;; public_sale_active
+    ds~load_uint(1),   ;; guarantee_sale_active
+    ds~load_uint(1),   ;; fcfs_sale_active
+    ds~load_dict(),    ;; presale_list (guarantee whitelist)
+    ds~load_dict(),    ;; presale2_list (FCFS whitelist)
+    ds~load_uint(64)   ;; minted_presale_token
   );
 }
 
-() save_data(int total_supply, int max_supply, int price, int owner, int sale_is_active, int royalty_percent) impure inline {
+() save_data(int total_supply, int max_supply, int public_price, int presale_price, int owner,
+             int public_sale_active, int guarantee_sale_active, int fcfs_sale_active,
+             cell presale_list, cell presale2_list, int minted_presale_token) impure inline {
   set_data(begin_cell()
     .store_uint(total_supply, 64)
     .store_uint(max_supply, 64)
-    .store_uint(price, 64)
+    .store_uint(public_price, 64)
+    .store_uint(presale_price, 64)
     .store_uint(owner, 64)
-    .store_uint(sale_is_active, 1)
-    .store_uint(royalty_percent, 64)
+    .store_uint(public_sale_active, 1)
+    .store_uint(guarantee_sale_active, 1)
+    .store_uint(fcfs_sale_active, 1)
+    .store_dict(presale_list)
+    .store_dict(presale2_list)
+    .store_uint(minted_presale_token, 64)
     .end_cell());
 }
 
-;; Getter fonksiyonları
-(int, int, int, int, int, int) get_collection_data() method_id {
-  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
-  return (total_supply, max_supply, price, owner, sale_is_active, royalty_percent);
+;; Yardımcı fonksiyonlar
+int is_owner() inline {
+  var (_, _, _, _, owner, _, _, _, _, _, _) = load_data();
+  return equal_slices(sender_address(), owner);
 }
 
-;; Mint fonksiyonu
-() mint(slice to) impure {
-  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
-  throw_unless(101, sale_is_active);
+() mint_token(slice to) impure inline {
+  var (total_supply, max_supply, _, _, _, _, _, _, _, _, _) = load_data();
   throw_unless(102, total_supply < max_supply);
 
-  int amount = price;
-  throw_unless(103, msg.value >= amount);
-
   total_supply += 1;
-  save_data(total_supply, max_supply, price, owner, sale_is_active, royalty_percent);
 
   ;; NFT'yi oluştur ve gönder
   var nft_item = begin_cell()
@@ -48,22 +54,134 @@
   send_raw_message(nft_item, 64);
 }
 
-;; Owner fonksiyonları
-() toggle_sale() impure {
-  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
-  throw_unless(401, msg.sender == owner);
-  save_data(total_supply, max_supply, price, owner, ~ sale_is_active, royalty_percent);
+;; Mint fonksiyonları
+() public_mint(int number_of_tokens) impure {
+  var (total_supply, max_supply, public_price, _, _, public_sale_active, _, _, _, _, _) = load_data();
+  throw_unless(101, public_sale_active);
+  throw_unless(103, number_of_tokens > 0 && number_of_tokens <= 1); ;; maxTokenPurchase = 1
+
+  int amount = public_price * number_of_tokens;
+  throw_unless(104, msg.value >= amount);
+
+  repeat(number_of_tokens) {
+    mint_token(sender_address());
+  }
 }
 
-() set_price(int new_price) impure {
-  var (total_supply, max_supply, _, owner, sale_is_active, royalty_percent) = load_data();
-  throw_unless(401, msg.sender == owner);
-  save_data(total_supply, max_supply, new_price, owner, sale_is_active, royalty_percent);
+() guarantee_sale(int number_of_tokens) impure {
+  var (total_supply, max_supply, _, presale_price, _, _, guarantee_sale_active, _, presale_list, _, minted_presale_token) = load_data();
+  throw_unless(101, guarantee_sale_active);
+  throw_unless(105, dict_get?(presale_list, sender_address()));
+  throw_unless(106, number_of_tokens > 0 && number_of_tokens <= 1); ;; maxTokenPurchase = 1
+  throw_unless(107, minted_presale_token + number_of_tokens <= 2000); ;; GuaranteeMaxMint = 2000
+
+  int amount = presale_price * number_of_tokens;
+  throw_unless(108, msg.value >= amount);
+
+  repeat(number_of_tokens) {
+    mint_token(sender_address());
+    minted_presale_token += 1;
+  }
+
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() fcfs_sale(int number_of_tokens) impure {
+  var (total_supply, max_supply, _, presale_price, _, _, _, fcfs_sale_active, presale_list, presale2_list, _) = load_data();
+  throw_unless(101, fcfs_sale_active);
+  throw_unless(109, dict_get?(presale_list, sender_address()) | dict_get?(presale2_list, sender_address()));
+  throw_unless(110, number_of_tokens > 0 && number_of_tokens <= 1); ;; maxTokenPurchase = 1
+
+  int amount = presale_price * number_of_tokens;
+  throw_unless(111, msg.value >= amount);
+
+  repeat(number_of_tokens) {
+    mint_token(sender_address());
+  }
+}
+
+;; Owner fonksiyonları
+() toggle_public_sale() impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            ~ public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() toggle_guarantee_sale() impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            public_sale_active, ~ guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() toggle_fcfs_sale() impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            public_sale_active, guarantee_sale_active, ~ fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() set_public_price(int new_price) impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, _, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  save_data(total_supply, max_supply, new_price, presale_price, owner,
+            public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() set_presale_price(int new_price) impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, _, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  save_data(total_supply, max_supply, public_price, new_price, owner,
+            public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() add_to_presale_list(slice address) impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  presale_list~dict_set(256, address, 1);
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() add_to_presale2_list(slice address) impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  presale2_list~dict_set(256, address, 1);
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() remove_from_presale_list(slice address) impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  presale_list~dict_delete?(256, address);
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
+}
+
+() remove_from_presale2_list(slice address) impure {
+  throw_unless(401, is_owner());
+  var (total_supply, max_supply, public_price, presale_price, owner, public_sale_active, guarantee_sale_active, fcfs_sale_active, presale_list, presale2_list, minted_presale_token) = load_data();
+  presale2_list~dict_delete?(256, address);
+  save_data(total_supply, max_supply, public_price, presale_price, owner,
+            public_sale_active, guarantee_sale_active, fcfs_sale_active,
+            presale_list, presale2_list, minted_presale_token);
 }
 
 () withdraw() impure {
-  var (total_supply, max_supply, price, owner, sale_is_active, royalty_percent) = load_data();
-  throw_unless(401, msg.sender == owner);
+  throw_unless(401, is_owner());
+  var (_, _, _, _, owner, _, _, _, _, _, _) = load_data();
   raw_reserve(0, 4);
   send_raw_message(begin_cell().store_uint(0x18, 6).store_slice(owner).store_coins(0).store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1).end_cell(), 128);
 }
@@ -76,44 +194,44 @@
 
   int op = in_msg_body~load_uint(32);
 
-  if (op == 1) { ;; Mint
-    mint(in_msg_body~load_msg_addr());
-  } elseif (op == 2) { ;; Toggle sale
-    toggle_sale();
-  } elseif (op == 3) { ;; Set price
-    set_price(in_msg_body~load_uint(64));
-  } elseif (op == 4) { ;; Withdraw
+  if (op == 1) { ;; Public Mint
+    public_mint(in_msg_body~load_uint(8));
+  } elseif (op == 2) { ;; Guarantee Sale
+    guarantee_sale(in_msg_body~load_uint(8));
+  } elseif (op == 3) { ;; FCFS Sale
+    fcfs_sale(in_msg_body~load_uint(8));
+  } elseif (op == 4) { ;; Toggle Public Sale
+    toggle_public_sale();
+  } elseif (op == 5) { ;; Toggle Guarantee Sale
+    toggle_guarantee_sale();
+  } elseif (op == 6) { ;; Toggle FCFS Sale
+    toggle_fcfs_sale();
+  } elseif (op == 7) { ;; Set Public Price
+    set_public_price(in_msg_body~load_uint(64));
+  } elseif (op == 8) { ;; Set Presale Price
+    set_presale_price(in_msg_body~load_uint(64));
+  } elseif (op == 9) { ;; Add to Presale List
+    add_to_presale_list(in_msg_body~load_msg_addr());
+  } elseif (op == 10) { ;; Add to Presale2 List
+    add_to_presale2_list(in_msg_body~load_msg_addr());
+  } elseif (op == 11) { ;; Remove from Presale List
+    remove_from_presale_list(in_msg_body~load_msg_addr());
+  } elseif (op == 12) { ;; Remove from Presale2 List
+    remove_from_presale2_list(in_msg_body~load_msg_addr());
+  } elseif (op == 13) { ;; Withdraw
     withdraw();
   }
 }
 
 ;; Get methods
 int total_supply() method_id {
-  var (total_supply, _, _, _, _, _) = load_data();
+  var (total_supply, _, _, _, _, _, _, _, _, _, _) = load_data();
   return total_supply;
 }
 
 int max_supply() method_id {
-  var (_, max_supply, _, _, _, _) = load_data();
+  var (_, max_supply, _, _, _, _, _, _, _, _, _) = load_data();
   return max_supply;
 }
 
-int price() method_id {
-  var (_, _, price, _, _, _) = load_data();
-  return price;
-}
-
-int owner() method_id {
-  var (_, _, _, owner, _, _) = load_data();
-  return owner;
-}
-
-int sale_is_active() method_id {
-  var (_, _, _, _, sale_is_active, _) = load_data();
-  return sale_is_active;
-}
-
-int royalty_percent() method_id {
-  var (_, _, _, _, _, royalty_percent) = load_data();
-  return royalty_percent;
-}
+int public_price() method_id {
